@@ -1,60 +1,65 @@
-import torch
+import argparse
 from collections import OrderedDict
+
+import torch
+
 from recformer import RecformerModel, RecformerConfig, RecformerForSeqRec
 
-PRETRAINED_CKPT_PATH = 'pretrain_ckpt/pytorch_model.bin'
-LONGFORMER_CKPT_PATH = 'longformer_ckpt/longformer-base-4096.bin'
-LONGFORMER_TYPE = 'allenai/longformer-base-4096'
-RECFORMER_OUTPUT_PATH = 'pretrain_ckpt/recformer_pretrain_ckpt.bin'
-RECFORMERSEQREC_OUTPUT_PATH = 'pretrain_ckpt/seqrec_pretrain_ckpt.bin'
 
-input_file = PRETRAINED_CKPT_PATH
-state_dict = torch.load(input_file)
-
-longformer_file = LONGFORMER_CKPT_PATH
-longformer_state_dict = torch.load(longformer_file)
-
-state_dict['_forward_module.model.longformer.embeddings.word_embeddings.weight'] = longformer_state_dict['longformer.embeddings.word_embeddings.weight']
-
-output_file = RECFORMER_OUTPUT_PATH
-new_state_dict = OrderedDict()
-
-for key, value in state_dict.items():
-
-    if key.startswith('_forward_module.model.longformer.'):
-        new_key = key[len('_forward_module.model.longformer.'):]
-        new_state_dict[new_key] = value
-
-config = RecformerConfig.from_pretrained(LONGFORMER_TYPE)
-config.max_attr_num = 3
-config.max_attr_length = 32
-config.max_item_embeddings = 51
-config.attention_window = [64] * 12
-model = RecformerModel(config)
-model.load_state_dict(new_state_dict)
-
-print('Convert successfully.')
-torch.save(new_state_dict, output_file)
+DEFAULT_MODEL_NAME = 'schen/longformer-chinese-base-4096'
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--pretrained_ckpt_path', type=str, default='pretrain_ckpt/pytorch_model.bin')
+    parser.add_argument('--longformer_ckpt_path', type=str, default='longformer_ckpt/longformer-chinese-base-4096.bin')
+    parser.add_argument('--model_name_or_path', type=str, default=DEFAULT_MODEL_NAME)
+    parser.add_argument('--recformer_output_path', type=str, default='pretrain_ckpt/recformer_pretrain_ckpt.bin')
+    parser.add_argument('--seqrec_output_path', type=str, default='pretrain_ckpt/seqrec_pretrain_ckpt.bin')
+    return parser.parse_args()
 
-output_file = RECFORMERSEQREC_OUTPUT_PATH
-new_state_dict = OrderedDict()
 
-for key, value in state_dict.items():
+def build_config(model_name_or_path):
+    config = RecformerConfig.from_pretrained(model_name_or_path)
+    config.max_attr_num = 3
+    config.max_attr_length = 32
+    config.max_item_embeddings = 51
+    config.attention_window = [64] * config.num_hidden_layers
+    return config
 
-    if key.startswith('_forward_module.model.'):
-        new_key = key[len('_forward_module.model.'):]
-        new_state_dict[new_key] = value
 
-config = RecformerConfig.from_pretrained(LONGFORMER_TYPE)
-config.max_attr_num = 3
-config.max_attr_length = 32
-config.max_item_embeddings = 51
-config.attention_window = [64] * 12
-model = RecformerForSeqRec(config)
+def main():
+    args = parse_args()
 
-model.load_state_dict(new_state_dict, strict=False)
+    state_dict = torch.load(args.pretrained_ckpt_path)
+    longformer_state_dict = torch.load(args.longformer_ckpt_path)
 
-print('Convert successfully.')
-torch.save(new_state_dict, output_file)
+    state_dict['_forward_module.model.longformer.embeddings.word_embeddings.weight'] = longformer_state_dict[
+        'longformer.embeddings.word_embeddings.weight'
+    ]
+
+    recformer_state_dict = OrderedDict()
+    for key, value in state_dict.items():
+        if key.startswith('_forward_module.model.longformer.'):
+            new_key = key[len('_forward_module.model.longformer.'):]
+            recformer_state_dict[new_key] = value
+
+    recformer_model = RecformerModel(build_config(args.model_name_or_path))
+    recformer_model.load_state_dict(recformer_state_dict)
+    torch.save(recformer_state_dict, args.recformer_output_path)
+    print(f'Converted RecformerModel checkpoint: {args.recformer_output_path}')
+
+    seqrec_state_dict = OrderedDict()
+    for key, value in state_dict.items():
+        if key.startswith('_forward_module.model.'):
+            new_key = key[len('_forward_module.model.'):]
+            seqrec_state_dict[new_key] = value
+
+    seqrec_model = RecformerForSeqRec(build_config(args.model_name_or_path))
+    seqrec_model.load_state_dict(seqrec_state_dict, strict=False)
+    torch.save(seqrec_state_dict, args.seqrec_output_path)
+    print(f'Converted RecformerForSeqRec checkpoint: {args.seqrec_output_path}')
+
+
+if __name__ == '__main__':
+    main()
