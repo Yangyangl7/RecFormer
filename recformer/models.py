@@ -7,16 +7,62 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn import CrossEntropyLoss
 
-from transformers.models.longformer.modeling_longformer import (
-    LongformerConfig,
-    LongformerPreTrainedModel,
-    LongformerEncoder,
-    LongformerBaseModelOutputWithPooling,
-    LongformerLMHead
-)
+from transformers import AutoModel, AutoModelForMaskedLM, PreTrainedModel
+from transformers.modeling_outputs import BaseModelOutputWithPooling
 
+try:
+    from transformers.models.longformer.configuration_longformer import LongformerConfig
+except Exception:
+    from transformers import LongformerConfig
+
+try:
+    from transformers.models.longformer.modeling_longformer import LongformerEncoder, LongformerLMHead
+except Exception:
+    LongformerEncoder = None
+    LongformerLMHead = None
+
+
+try:
+    from transformers.models.longformer.modeling_longformer import LongformerBaseModelOutputWithPooling
+except Exception:
+    from dataclasses import dataclass
+
+    @dataclass
+    class LongformerBaseModelOutputWithPooling(BaseModelOutputWithPooling):
+        global_attentions: Optional[Tuple[torch.FloatTensor]] = None
 
 logger = logging.getLogger(__name__)
+
+
+def _build_longformer_encoder(config: LongformerConfig):
+    """Build a Longformer-compatible encoder with graceful fallback."""
+    if LongformerEncoder is not None:
+        return LongformerEncoder(config)
+
+    backbone = AutoModel.from_config(config)
+    if not hasattr(backbone, 'encoder'):
+        raise ValueError(
+            'Unable to build encoder: backbone model has no `encoder` attribute. '
+            'Please use a Longformer-compatible checkpoint/config.'
+        )
+    return backbone.encoder
+
+
+def _build_mlm_head(config: LongformerConfig):
+    """Build MLM head with fallback to generic AutoModelForMaskedLM structures."""
+    if LongformerLMHead is not None:
+        return LongformerLMHead(config)
+
+    mlm_model = AutoModelForMaskedLM.from_config(config)
+    if hasattr(mlm_model, 'lm_head'):
+        return mlm_model.lm_head
+    if hasattr(mlm_model, 'cls') and hasattr(mlm_model.cls, 'predictions'):
+        return mlm_model.cls.predictions
+
+    raise ValueError(
+        'Unable to build MLM head from current backbone. '
+        'Please ensure the checkpoint is compatible with masked language modeling.'
+    )
 
 
 class RecformerConfig(LongformerConfig):
@@ -170,7 +216,7 @@ class RecformerPooler(nn.Module):
         
 
 
-class RecformerModel(LongformerPreTrainedModel):
+class RecformerModel(PreTrainedModel):
     def __init__(self, config: RecformerConfig):
         super().__init__(config)
         self.config = config
@@ -186,7 +232,7 @@ class RecformerModel(LongformerPreTrainedModel):
             )
 
         self.embeddings = RecformerEmbeddings(config)
-        self.encoder = LongformerEncoder(config)
+        self.encoder = _build_longformer_encoder(config)
         self.pooler = RecformerPooler(config)
 
         # Initialize weights and apply final processing
@@ -351,7 +397,7 @@ class RecformerModel(LongformerPreTrainedModel):
             pooler_output=pooled_output,
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
-            global_attentions=encoder_outputs.global_attentions,
+            global_attentions=getattr(encoder_outputs, "global_attentions", None),
         )
 
 class Similarity(nn.Module):
@@ -368,12 +414,12 @@ class Similarity(nn.Module):
         return self.cos(x, y) / self.temp
 
 
-class RecformerForPretraining(LongformerPreTrainedModel):
+class RecformerForPretraining(PreTrainedModel):
     def __init__(self, config: RecformerConfig):
         super().__init__(config)
 
         self.longformer = RecformerModel(config)
-        self.lm_head = LongformerLMHead(config)
+        self.lm_head = _build_mlm_head(config)
         self.sim = Similarity(config)
         # Initialize weights and apply final processing
         self.post_init()
@@ -520,7 +566,7 @@ class RecformerForPretraining(LongformerPreTrainedModel):
 
 
 
-class RecformerForSeqRec(LongformerPreTrainedModel):
+class RecformerForSeqRec(PreTrainedModel):
     def __init__(self, config: RecformerConfig):
         super().__init__(config)
 
