@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model_name_or_path', type=str, default=None)
+parser.add_argument('--model_name_or_path', type=str, default='schen/longformer-chinese-base-4096')
 parser.add_argument('--temp', type=float, default=0.05, help="Temperature for softmax.")
 parser.add_argument('--preprocessing_num_workers', type=int, default=8, help="The number of processes to use for the preprocessing.")
 parser.add_argument('--train_file', type=str, required=True)
@@ -36,7 +36,7 @@ parser.add_argument('--log_step', type=int, default=2000)
 parser.add_argument('--device', type=int, default=1)
 parser.add_argument('--fp16', action='store_true')
 parser.add_argument('--ckpt', type=str, default=None)
-parser.add_argument('--longformer_ckpt', type=str, default='longformer_ckpt/longformer-base-4096.bin')
+parser.add_argument('--longformer_ckpt', type=str, default='longformer_ckpt/longformer-chinese-base-4096.bin')
 parser.add_argument('--fix_word_embedding', action='store_true')
 
 
@@ -61,7 +61,7 @@ def main():
     config.max_attr_num = 3
     config.max_attr_length = 32
     config.max_item_embeddings = 51  # 50 item and 1 for cls
-    config.attention_window = [64] * 12
+    config.attention_window = [64] * config.num_hidden_layers
     config.max_token_num = 1024
     tokenizer = RecformerTokenizer.from_pretrained(args.model_name_or_path, config)
 
