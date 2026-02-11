@@ -11,6 +11,7 @@ The KDD 2023 paper [Text Is All You Need: Learning Language Representations for 
 - [Pretraining](#pretraining)
 - [Pretrained Model](#pretrained-model)
 - [Finetuning](#finetuning)
+- [Longformer-Chinese Migration Guide](docs/longformer_chinese_migration.md)
 - [Contact](#contact)
 - [Citation](#citation)
 
