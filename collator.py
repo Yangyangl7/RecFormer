@@ -191,7 +191,7 @@ class PretrainDataCollatorWithPadding:
             self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
         ]
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
-        if self.tokenizer._pad_token is not None:
+        if self.tokenizer.pad_token_id is not None:
             padding_mask = labels.eq(self.tokenizer.pad_token_id)
             probability_matrix.masked_fill_(padding_mask, value=0.0)
 
@@ -224,7 +224,7 @@ class PretrainDataCollatorWithPadding:
             return torch.stack(examples, dim=0)
 
         # If yes, check if we have a `pad_token`.
-        if self.tokenizer._pad_token is None:
+        if self.tokenizer.pad_token_id is None:
             raise ValueError(
                 "You are attempting to pad samples but the tokenizer you are using"
                 f" ({self.tokenizer.__class__.__name__}) does not have a pad token."
