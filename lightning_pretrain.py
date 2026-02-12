@@ -42,7 +42,19 @@ parser.add_argument('--fix_word_embedding', action='store_true')
 
 
 tokenizer_glb: RecformerTokenizer = None
+
+
+def _init_tokenizer_worker(model_name_or_path, config_dict):
+    global tokenizer_glb
+    worker_config = RecformerConfig.from_pretrained(model_name_or_path)
+    for k, v in config_dict.items():
+        setattr(worker_config, k, v)
+    tokenizer_glb = RecformerTokenizer.from_pretrained(model_name_or_path, worker_config)
+
+
 def _par_tokenize_doc(doc):
+    if tokenizer_glb is None:
+        raise RuntimeError('tokenizer_glb is None. tokenizer worker is not initialized correctly.')
     
     item_id, item_attr = doc
 
@@ -81,12 +93,25 @@ def main():
     else:
         print(f'Loading attribute data {path_corpus}')
         item_attrs = json.load(open(path_corpus))
-        pool = Pool(processes=args.preprocessing_num_workers)
-        pool_func = pool.imap(func=_par_tokenize_doc, iterable=item_attrs.items())
-        doc_tuples = list(tqdm(pool_func, total=len(item_attrs), ncols=100, desc=f'[Tokenize] {path_corpus}'))
+        if args.preprocessing_num_workers <= 1:
+            doc_tuples = [_par_tokenize_doc(doc) for doc in tqdm(item_attrs.items(), total=len(item_attrs), ncols=100, desc=f'[Tokenize] {path_corpus}')]
+        else:
+            config_dict = {
+                'max_attr_num': config.max_attr_num,
+                'max_attr_length': config.max_attr_length,
+                'max_item_embeddings': config.max_item_embeddings,
+                'attention_window': config.attention_window,
+                'max_token_num': config.max_token_num,
+            }
+            with Pool(
+                processes=args.preprocessing_num_workers,
+                initializer=_init_tokenizer_worker,
+                initargs=(args.model_name_or_path, config_dict),
+            ) as pool:
+                pool_func = pool.imap(func=_par_tokenize_doc, iterable=item_attrs.items())
+                doc_tuples = list(tqdm(pool_func, total=len(item_attrs), ncols=100, desc=f'[Tokenize] {path_corpus}'))
+
         tokenized_items = {item_id: [input_ids, token_type_ids] for item_id, input_ids, token_type_ids in doc_tuples}
-        pool.close()
-        pool.join()
 
         json.dump(tokenized_items, open(path_tokenized_items, 'w'))
 
