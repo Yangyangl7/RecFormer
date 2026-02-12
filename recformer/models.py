@@ -1,4 +1,5 @@
 import logging
+import inspect
 from typing import List, Union, Optional, Tuple
 from dataclasses import dataclass
 
@@ -252,6 +253,20 @@ class RecformerModel(PreTrainedModel):
         for layer, heads in heads_to_prune.items():
             self.encoder.layer[layer].attention.prune_heads(heads)
 
+    def _forward_encoder(self, embedding_output, extended_attention_mask, head_mask, padding_len, output_attentions, output_hidden_states, return_dict):
+        encoder_kwargs = {
+            'attention_mask': extended_attention_mask,
+            'head_mask': head_mask,
+            'padding_len': padding_len,
+            'output_attentions': output_attentions,
+            'output_hidden_states': output_hidden_states,
+            'return_dict': return_dict,
+        }
+
+        supported = set(inspect.signature(self.encoder.forward).parameters.keys())
+        filtered_kwargs = {k: v for k, v in encoder_kwargs.items() if k in supported}
+        return self.encoder(embedding_output, **filtered_kwargs)
+
     def _pad_to_window_size(
         self,
         input_ids: torch.Tensor,
@@ -377,9 +392,9 @@ class RecformerModel(PreTrainedModel):
             input_ids=input_ids, position_ids=position_ids, item_position_ids=item_position_ids, token_type_ids=token_type_ids, inputs_embeds=inputs_embeds
         )
 
-        encoder_outputs = self.encoder(
-            embedding_output,
-            attention_mask=extended_attention_mask,
+        encoder_outputs = self._forward_encoder(
+            embedding_output=embedding_output,
+            extended_attention_mask=extended_attention_mask,
             head_mask=head_mask,
             padding_len=padding_len,
             output_attentions=output_attentions,
