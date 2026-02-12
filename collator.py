@@ -150,12 +150,13 @@ class PretrainDataCollatorWithPadding:
         return mask_labels
 
     def _is_subword(self, token: str):
+        token_text = self.tokenizer.convert_tokens_to_string([token])
         if (
-            not self.tokenizer.convert_tokens_to_string(token).startswith(" ")
+            not token_text.startswith(" ")
             and not self._is_punctuation(token[0])
         ):
             return True
-        
+
         return False
 
     @staticmethod
