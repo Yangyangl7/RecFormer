@@ -11,6 +11,7 @@ The KDD 2023 paper [Text Is All You Need: Learning Language Representations for 
 - [Pretraining](#pretraining)
 - [Pretrained Model](#pretrained-model)
 - [Finetuning](#finetuning)
+- [Longformer-Chinese Migration Guide](docs/longformer_chinese_migration.md)
 - [Contact](#contact)
 - [Citation](#citation)
 
@@ -53,19 +54,33 @@ Or, you can download the processed data from [here](https://drive.google.com/fil
 
 ### Training
 
-The pretraining code is based on the framework [Pytorch-Lightning](https://lightning.ai/docs/pytorch/stable/). The backbone model is `allenai/longformer-base-4096` but there are different `token type embedding` and `item position embedding`.
+The pretraining code is based on the framework [Pytorch-Lightning](https://lightning.ai/docs/pytorch/stable/). The backbone model defaults to `schen/longformer-chinese-base-4096` (you can override by `--model_name_or_path`) and uses different `token type embedding` and `item position embedding`.
 
 First, you need to adjust pretrained Longformer checkpoint to the model. You can run the following command:
 ```bash
 python save_longformer_ckpt.py
 ```
-This code will automatically download `allenai/longformer-base-4096` from Huggingface then adjust and save it to `longformer_ckpt/longformer-base-4096.bin`.
+This code will automatically download `schen/longformer-chinese-base-4096` from Huggingface then adjust and save it to `longformer_ckpt/longformer-chinese-base-4096.bin`.
 
 Then, you can pretrain your own model with the default settings by running the following command:
 ```bash
 bash lightning_run.sh
 ```
-If you use the training strategy `deepspeed_stage_2` (default setting in the script), you need to first convert zero checkpoint to lightning checkpoint by running `zero_to_fp32.py` (automatically generated to checkpoint folder from pytorch-lightning):
+For low-resource environments (e.g. single GTX 1050Ti or CPU), you can override runtime config directly:
+```bash
+python lightning_pretrain.py \
+  --model_name_or_path schen/longformer-chinese-base-4096 \
+  --train_file pretrain_data/train.json \
+  --dev_file pretrain_data/dev.json \
+  --item_attr_file pretrain_data/meta_data.json \
+  --output_dir result/recformer_pretraining \
+  --accelerator auto \
+  --devices 1 \
+  --strategy auto \
+  --precision 32
+```
+When moving to stronger multi-GPU servers, you only need to change `--accelerator/--devices/--strategy/--precision` (or env vars in `lightning_run.sh`).
+If you use the training strategy `deepspeed_stage_2`, you need to first convert zero checkpoint to lightning checkpoint by running `zero_to_fp32.py` (automatically generated to checkpoint folder from pytorch-lightning):
 ```bash
 python zero_to_fp32.py . pytorch_model.bin
 ```
@@ -92,7 +107,7 @@ You can load the pretrained model by running the following code:
 import torch
 from recformer import RecformerModel, RecformerConfig, RecformerForSeqRec
 
-config = RecformerConfig.from_pretrained('allenai/longformer-base-4096')
+config = RecformerConfig.from_pretrained('schen/longformer-chinese-base-4096')
 config.max_attr_num = 3  # max number of attributes for each item
 config.max_attr_length = 32 # max number of tokens for each attribute
 config.max_item_embeddings = 51 # max number of items in a sequence +1 for cls token
