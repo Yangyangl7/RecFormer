@@ -152,7 +152,7 @@ def main():
     parser.add_argument('--data_path', type=str, default=None, required=True)
     parser.add_argument('--output_dir', type=str, default='checkpoints')
     parser.add_argument('--ckpt', type=str, default='best_model.bin')
-    parser.add_argument('--model_name_or_path', type=str, default='allenai/longformer-base-4096')
+    parser.add_argument('--model_name_or_path', type=str, default='schen/longformer-chinese-base-4096')
     parser.add_argument('--train_file', type=str, default='train.json')
     parser.add_argument('--dev_file', type=str, default='val.json')
     parser.add_argument('--test_file', type=str, default='test.json')
@@ -192,7 +192,7 @@ def main():
     config.max_attr_num = 3
     config.max_attr_length = 32
     config.max_item_embeddings = 51
-    config.attention_window = [64] * 12
+    config.attention_window = [64] * config.num_hidden_layers
     config.max_token_num = 1024
     config.item_num = len(item2id)
     config.finetune_negative_sample_size = args.finetune_negative_sample_size
