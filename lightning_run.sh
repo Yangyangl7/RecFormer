@@ -22,4 +22,6 @@ CUDA_VISIBLE_DEVICES=1,4,6,7 python lightning_pretrain.py \
     --devices ${DEVICES} \
     --strategy ${STRATEGY} \
     --precision ${PRECISION} \
+    --device 4 \
+    --fp16 \
     --fix_word_embedding
