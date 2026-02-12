@@ -205,15 +205,18 @@ class RecformerPooler(nn.Module):
     def forward(self, attention_mask: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
         # We "pool" the model by simply taking the hidden state corresponding
         # to the first token.
-        output = None
-        if self.pooler_type == 'cls':
-            output = hidden_states[:, 0]
-        elif self.pooler_type == "avg":
-            output = ((hidden_states * attention_mask.unsqueeze(-1)).sum(1) / attention_mask.sum(-1).unsqueeze(-1))
-        else:
-            raise NotImplementedError
+        pooler_type = (self.pooler_type or 'cls').lower()
 
-        return output
+        if pooler_type == 'cls':
+            return hidden_states[:, 0]
+
+        if pooler_type == 'avg':
+            valid_mask = (attention_mask > 0).to(hidden_states.dtype)
+            denom = valid_mask.sum(-1, keepdim=True).clamp(min=1.0)
+            return (hidden_states * valid_mask.unsqueeze(-1)).sum(1) / denom
+
+        logger.warning(f'Unknown pooler_type={self.pooler_type}, fallback to cls pooling.')
+        return hidden_states[:, 0]
         
 
 
