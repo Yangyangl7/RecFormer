@@ -192,11 +192,17 @@ def main():
     
     accelerator, devices, strategy, precision = resolve_trainer_runtime(args)
 
+    train_batch_num = len(train_loader)
+    val_check_interval = args.valid_step
+    if isinstance(val_check_interval, int) and val_check_interval > train_batch_num:
+        print(f'[TrainerConfig] valid_step={val_check_interval} is larger than train batches={train_batch_num}; fallback to per-epoch validation.')
+        val_check_interval = 1.0
+
     trainer = Trainer(accelerator=accelerator,
                      max_epochs=args.num_train_epochs,
                      devices=devices,
                      accumulate_grad_batches=args.gradient_accumulation_steps,
-                     val_check_interval=args.valid_step,
+                     val_check_interval=val_check_interval,
                      default_root_dir=args.output_dir,
                      gradient_clip_val=1.0,
                      log_every_n_steps=args.log_step,
