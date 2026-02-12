@@ -6,6 +6,7 @@ from pathlib import Path
 from tqdm import tqdm
 import json
 import argparse
+import ast
 import torch
 from pytorch_lightning import Trainer, seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -33,8 +34,12 @@ parser.add_argument('--batch_size', type=int, default=2)
 parser.add_argument('--learning_rate', type=float, default=5e-5)
 parser.add_argument('--valid_step', type=int, default=2000)
 parser.add_argument('--log_step', type=int, default=2000)
-parser.add_argument('--device', type=int, default=1)
-parser.add_argument('--fp16', action='store_true')
+parser.add_argument('--device', type=int, default=0, help='Legacy single GPU index when --devices is not set.')
+parser.add_argument('--devices', type=str, default=None, help='Trainer devices, e.g. 1, "[0]", "0,1", or "auto".')
+parser.add_argument('--accelerator', type=str, default='auto', choices=['auto', 'cpu', 'gpu'], help='Trainer accelerator.')
+parser.add_argument('--strategy', type=str, default='auto', help='Trainer strategy, e.g. auto, deepspeed_stage_2, ddp.')
+parser.add_argument('--precision', type=str, default='32', help='Trainer precision, e.g. 32, 16-mixed, bf16-mixed.')
+parser.add_argument('--fp16', action='store_true', help='Deprecated shortcut; if set, overrides --precision to 16-mixed.')
 parser.add_argument('--ckpt', type=str, default=None)
 parser.add_argument('--longformer_ckpt', type=str, default='longformer_ckpt/longformer-chinese-base-4096.bin')
 parser.add_argument('--fix_word_embedding', action='store_true')
@@ -61,6 +66,47 @@ def _par_tokenize_doc(doc):
     input_ids, token_type_ids = tokenizer_glb.encode_item(item_attr)
 
     return item_id, input_ids, token_type_ids
+
+
+def resolve_trainer_runtime(args):
+    precision = '16-mixed' if args.fp16 else args.precision
+
+    if args.devices is None:
+        devices = 1 if args.accelerator == 'cpu' else [args.device]
+    else:
+        if args.devices == 'auto':
+            devices = 'auto'
+        elif args.devices.startswith('['):
+            devices = ast.literal_eval(args.devices)
+        elif ',' in args.devices:
+            devices = [int(x.strip()) for x in args.devices.split(',') if x.strip()]
+        else:
+            try:
+                devices = int(args.devices)
+            except ValueError:
+                devices = args.devices
+
+    accelerator = args.accelerator
+    if accelerator == 'gpu' and not torch.cuda.is_available():
+        print('[TrainerConfig] CUDA unavailable, fallback to CPU.')
+        accelerator = 'cpu'
+        devices = 1
+
+    strategy = args.strategy
+    if accelerator != 'gpu' and strategy.startswith('deepspeed'):
+        print('[TrainerConfig] Deepspeed requires GPU, fallback strategy=auto.')
+        strategy = 'auto'
+
+    if accelerator == 'gpu' and isinstance(devices, list) and len(devices) <= 1 and strategy.startswith('deepspeed'):
+        print('[TrainerConfig] Single GPU detected, fallback strategy=auto for better compatibility.')
+        strategy = 'auto'
+
+    if accelerator == 'cpu' and precision != '32':
+        print('[TrainerConfig] CPU training uses precision=32 for compatibility.')
+        precision = '32'
+
+    print(f'[TrainerConfig] accelerator={accelerator}, devices={devices}, strategy={strategy}, precision={precision}')
+    return accelerator, devices, strategy, precision
 
 
 def main():
@@ -144,16 +190,18 @@ def main():
 
     checkpoint_callback = ModelCheckpoint(save_top_k=5, monitor="accuracy", mode="max", filename="{epoch}-{accuracy:.4f}")
     
-    trainer = Trainer(accelerator="gpu",
+    accelerator, devices, strategy, precision = resolve_trainer_runtime(args)
+
+    trainer = Trainer(accelerator=accelerator,
                      max_epochs=args.num_train_epochs,
-                     devices=args.device,
+                     devices=devices,
                      accumulate_grad_batches=args.gradient_accumulation_steps,
                      val_check_interval=args.valid_step,
                      default_root_dir=args.output_dir,
                      gradient_clip_val=1.0,
                      log_every_n_steps=args.log_step,
-                     precision=16 if args.fp16 else 32,
-                     strategy='deepspeed_stage_2',
+                     precision=precision,
+                     strategy=strategy,
                      callbacks=[checkpoint_callback]
                      )
 

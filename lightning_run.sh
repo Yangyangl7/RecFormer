@@ -1,5 +1,9 @@
 # Use distributed data parallel
 MODEL_NAME_OR_PATH=${MODEL_NAME_OR_PATH:-schen/longformer-chinese-base-4096}
+ACCELERATOR=${ACCELERATOR:-auto}
+DEVICES=${DEVICES:-auto}
+STRATEGY=${STRATEGY:-auto}
+PRECISION=${PRECISION:-32}
 
 CUDA_VISIBLE_DEVICES=1,4,6,7 python lightning_pretrain.py \
     --model_name_or_path ${MODEL_NAME_OR_PATH} \
@@ -14,6 +18,10 @@ CUDA_VISIBLE_DEVICES=1,4,6,7 python lightning_pretrain.py \
     --batch_size 16 \
     --learning_rate 5e-5 \
     --temp 0.05 \
+    --accelerator ${ACCELERATOR} \
+    --devices ${DEVICES} \
+    --strategy ${STRATEGY} \
+    --precision ${PRECISION} \
     --device 4 \
     --fp16 \
     --fix_word_embedding

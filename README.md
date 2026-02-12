@@ -66,7 +66,21 @@ Then, you can pretrain your own model with the default settings by running the f
 ```bash
 bash lightning_run.sh
 ```
-If you use the training strategy `deepspeed_stage_2` (default setting in the script), you need to first convert zero checkpoint to lightning checkpoint by running `zero_to_fp32.py` (automatically generated to checkpoint folder from pytorch-lightning):
+For low-resource environments (e.g. single GTX 1050Ti or CPU), you can override runtime config directly:
+```bash
+python lightning_pretrain.py \
+  --model_name_or_path schen/longformer-chinese-base-4096 \
+  --train_file pretrain_data/train.json \
+  --dev_file pretrain_data/dev.json \
+  --item_attr_file pretrain_data/meta_data.json \
+  --output_dir result/recformer_pretraining \
+  --accelerator auto \
+  --devices 1 \
+  --strategy auto \
+  --precision 32
+```
+When moving to stronger multi-GPU servers, you only need to change `--accelerator/--devices/--strategy/--precision` (or env vars in `lightning_run.sh`).
+If you use the training strategy `deepspeed_stage_2`, you need to first convert zero checkpoint to lightning checkpoint by running `zero_to_fp32.py` (automatically generated to checkpoint folder from pytorch-lightning):
 ```bash
 python zero_to_fp32.py . pytorch_model.bin
 ```
