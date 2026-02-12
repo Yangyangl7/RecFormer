@@ -99,7 +99,7 @@ class PretrainDataCollatorWithPadding:
         for e in flat_features:
             ref_tokens = []
             for id in e["input_ids"]:
-                token = self.tokenizer._convert_id_to_token(id)
+                token = self.tokenizer.convert_ids_to_tokens([id])[0]
                 ref_tokens.append(token)
 
             mask_labels.append(self._whole_word_mask(ref_tokens))
@@ -150,6 +150,9 @@ class PretrainDataCollatorWithPadding:
         return mask_labels
 
     def _is_subword(self, token: str):
+        if not token:
+            return False
+
         token_text = self.tokenizer.convert_tokens_to_string([token])
         if (
             not token_text.startswith(" ")
@@ -171,6 +174,14 @@ class PretrainDataCollatorWithPadding:
             return True
         return False
 
+
+    def _tokenizer_vocab_size(self) -> int:
+        vocab_size = getattr(self.tokenizer, 'vocab_size', None)
+        if vocab_size is not None:
+            return int(vocab_size)
+        if hasattr(self.tokenizer, 'get_vocab'):
+            return len(self.tokenizer.get_vocab())
+        raise ValueError('Cannot determine tokenizer vocab size for random MLM token replacement.')
 
     def mask_tokens(self, inputs: torch.Tensor, mask_labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -204,7 +215,7 @@ class PretrainDataCollatorWithPadding:
 
         # 10% of the time, we replace masked input tokens with random word
         indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
+        random_words = torch.randint(self._tokenizer_vocab_size(), labels.shape, dtype=torch.long)
         inputs[indices_random] = random_words[indices_random]
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
