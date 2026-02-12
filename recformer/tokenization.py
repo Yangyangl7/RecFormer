@@ -19,7 +19,10 @@ class RecformerTokenizer:
         return cls(tokenizer=tokenizer, config=config)
 
     def __getattr__(self, name):
-        return getattr(self.tokenizer, name)
+        tokenizer = object.__getattribute__(self, '__dict__').get('tokenizer', None)
+        if tokenizer is None:
+            raise AttributeError(f"{self.__class__.__name__} has no attribute '{name}' (tokenizer is not initialized)")
+        return getattr(tokenizer, name)
 
     def __call__(self, items, pad_to_max=False, return_tensor=False):
         '''
