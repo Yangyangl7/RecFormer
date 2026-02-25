@@ -44,6 +44,18 @@ def _par_tokenize_doc(doc):
 
     return item_id, input_ids, token_type_ids
 
+
+def setup_gpu_runtime(disable_tf32: bool):
+    if not torch.cuda.is_available():
+        return False
+
+    torch.backends.cudnn.benchmark = True
+    if not disable_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision('high')
+    return True
+
 def encode_all_items(model: RecformerModel, tokenizer: RecformerTokenizer, tokenized_items, args):
 
     model.eval()
@@ -112,8 +124,8 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, scaler, args):
         for k, v in batch.items():
             batch[k] = v.to(args.device)
 
-        if args.fp16:
-            with autocast():
+        if args.use_amp:
+            with autocast(dtype=args.amp_dtype):
                 loss = model(**batch)
         else:
             loss = model(**batch)
@@ -121,13 +133,13 @@ def train_one_epoch(model, dataloader, optimizer, scheduler, scaler, args):
         if args.gradient_accumulation_steps > 1:
             loss = loss / args.gradient_accumulation_steps
 
-        if args.fp16:
+        if args.use_grad_scaler:
             scaler.scale(loss).backward()
         else:
             loss.backward()
 
         if (step + 1) % args.gradient_accumulation_steps == 0:
-            if args.fp16:
+            if args.use_grad_scaler:
 
                 scale_before = scaler.get_scale()
                 scaler.step(optimizer)
@@ -152,7 +164,7 @@ def main():
     parser.add_argument('--data_path', type=str, default=None, required=True)
     parser.add_argument('--output_dir', type=str, default='checkpoints')
     parser.add_argument('--ckpt', type=str, default='best_model.bin')
-    parser.add_argument('--model_name_or_path', type=str, default='allenai/longformer-base-4096')
+    parser.add_argument('--model_name_or_path', type=str, default='severinsimmler/xlm-roberta-longformer-base-16384')
     parser.add_argument('--train_file', type=str, default='train.json')
     parser.add_argument('--dev_file', type=str, default='val.json')
     parser.add_argument('--test_file', type=str, default='test.json')
@@ -176,15 +188,25 @@ def main():
     parser.add_argument('--weight_decay', type=float, default=0)
     parser.add_argument('--warmup_steps', type=int, default=100)
     parser.add_argument('--device', type=int, default=0)
-    parser.add_argument('--fp16', action='store_true')
+    parser.add_argument('--precision', type=str, default='bf16', choices=['32', 'fp16', 'bf16'])
+    parser.add_argument('--fp16', action='store_true', help='Deprecated alias to set --precision fp16')
     parser.add_argument('--fix_word_embedding', action='store_true')
     parser.add_argument('--verbose', type=int, default=3)
+    parser.add_argument('--disable_tf32', action='store_true')
     
 
     args = parser.parse_args()
     print(args)
     seed_everything(42)
-    args.device = torch.device('cuda:{}'.format(args.device)) if args.device>=0 else torch.device('cpu')
+    has_cuda = setup_gpu_runtime(args.disable_tf32)
+    if args.fp16:
+        args.precision = 'fp16'
+    if not has_cuda:
+        args.precision = '32'
+    args.device = torch.device('cuda:{}'.format(args.device)) if has_cuda and args.device >= 0 else torch.device('cpu')
+    args.use_amp = args.device.type == 'cuda' and args.precision in ('fp16', 'bf16')
+    args.use_grad_scaler = args.device.type == 'cuda' and args.precision == 'fp16'
+    args.amp_dtype = torch.float16 if args.precision == 'fp16' else torch.bfloat16
 
     train, val, test, item_meta_dict, item2id, id2item = load_data(args)
 
@@ -192,7 +214,7 @@ def main():
     config.max_attr_num = 3
     config.max_attr_length = 32
     config.max_item_embeddings = 51
-    config.attention_window = [64] * 12
+    config.attention_window = [64] * config.num_hidden_layers
     config.max_token_num = 1024
     config.item_num = len(item2id)
     config.finetune_negative_sample_size = args.finetune_negative_sample_size
@@ -238,16 +260,25 @@ def main():
     train_loader = DataLoader(train_data, 
                               batch_size=args.batch_size, 
                               shuffle=True, 
-                              collate_fn=train_data.collate_fn)
+                              collate_fn=train_data.collate_fn,
+                              num_workers=args.dataloader_num_workers,
+                              pin_memory=args.device.type == 'cuda',
+                              persistent_workers=args.dataloader_num_workers > 0)
     dev_loader = DataLoader(val_data, 
                             batch_size=args.batch_size, 
-                            collate_fn=val_data.collate_fn)
+                            collate_fn=val_data.collate_fn,
+                            num_workers=args.dataloader_num_workers,
+                            pin_memory=args.device.type == 'cuda',
+                            persistent_workers=args.dataloader_num_workers > 0)
     test_loader = DataLoader(test_data, 
                             batch_size=args.batch_size, 
-                            collate_fn=test_data.collate_fn)
+                            collate_fn=test_data.collate_fn,
+                            num_workers=args.dataloader_num_workers,
+                            pin_memory=args.device.type == 'cuda',
+                            persistent_workers=args.dataloader_num_workers > 0)
 
     model = RecformerForSeqRec(config)
-    pretrain_ckpt = torch.load(args.pretrain_ckpt)
+    pretrain_ckpt = torch.load(args.pretrain_ckpt, map_location='cpu')
     model.load_state_dict(pretrain_ckpt, strict=False)
     model.to(args.device)
 
@@ -272,8 +303,8 @@ def main():
     num_train_optimization_steps = int(len(train_loader) / args.gradient_accumulation_steps) * args.num_train_epochs
     optimizer, scheduler = create_optimizer_and_scheduler(model, num_train_optimization_steps, args)
     
-    if args.fp16:
-        scaler = torch.cuda.amp.GradScaler()
+    if args.use_grad_scaler:
+        scaler = torch.cuda.amp.GradScaler(enabled=True)
     else:
         scaler = None
 

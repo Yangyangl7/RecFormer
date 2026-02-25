@@ -53,35 +53,51 @@ Or, you can download the processed data from [here](https://drive.google.com/fil
 
 ### Training
 
-The pretraining code is based on the framework [Pytorch-Lightning](https://lightning.ai/docs/pytorch/stable/). The backbone model is `allenai/longformer-base-4096` but there are different `token type embedding` and `item position embedding`.
+The pretraining code is based on the framework [Pytorch-Lightning](https://lightning.ai/docs/pytorch/stable/). The default backbone model is `severinsimmler/xlm-roberta-longformer-base-16384` with different `token type embedding` and `item position embedding`.
 
 First, you need to adjust pretrained Longformer checkpoint to the model. You can run the following command:
 ```bash
 python save_longformer_ckpt.py
 ```
-This code will automatically download `allenai/longformer-base-4096` from Huggingface then adjust and save it to `longformer_ckpt/longformer-base-4096.bin`.
+This code will automatically download the backbone from Hugging Face and adjust it to Recformer format. The default output path is `longformer_ckpt/xlm-roberta-longformer-base-16384.bin`.
+You can also pass explicit arguments:
+```bash
+python save_longformer_ckpt.py \
+  --model_name_or_path severinsimmler/xlm-roberta-longformer-base-16384 \
+  --output_ckpt_path longformer_ckpt/xlm-roberta-longformer-base-16384.bin
+```
 
 Then, you can pretrain your own model with the default settings by running the following command:
 ```bash
 bash lightning_run.sh
 ```
-If you use the training strategy `deepspeed_stage_2` (default setting in the script), you need to first convert zero checkpoint to lightning checkpoint by running `zero_to_fp32.py` (automatically generated to checkpoint folder from pytorch-lightning):
+The script is tuned for single-GPU training by default (`CUDA_VISIBLE_DEVICES=0`, `--devices 1`, `--precision bf16-mixed`, `--strategy auto`), which is suitable for RTX 4080.
+You can override resource-related settings from the shell, for example:
+```bash
+CUDA_VISIBLE_DEVICES=0 BATCH_SIZE=8 GRADIENT_ACCUMULATION_STEPS=8 PRECISION=bf16-mixed bash lightning_run.sh
+```
+For a 12GB RTX 4080 on Windows, a safer pretraining start point from dry-run is:
+- `BATCH_SIZE=3`
+- `GRADIENT_ACCUMULATION_STEPS=12`
+If you see `CUDA launch timed out`, reduce `BATCH_SIZE` further or adjust Windows TDR settings.
+If you use the training strategy `deepspeed_stage_2`, you need to first convert zero checkpoint to lightning checkpoint by running `zero_to_fp32.py` (automatically generated to checkpoint folder from pytorch-lightning):
 ```bash
 python zero_to_fp32.py . pytorch_model.bin
 ```
 Finally, please convert the lightning checkpoint to pytorch checkpoint (they have different model parameter names) by running `convert_pretrain_ckpt.py`:
 ```bash
-python convert_pretrain_ckpt.py
+python convert_pretrain_ckpt.py \
+  --pretrained_ckpt_path pretrain_ckpt/pytorch_model.bin \
+  --longformer_ckpt_path longformer_ckpt/xlm-roberta-longformer-base-16384.bin \
+  --model_name_or_path severinsimmler/xlm-roberta-longformer-base-16384 \
+  --recformer_output_path pretrain_ckpt/recformer_pretrain_ckpt.bin \
+  --seqrec_output_path pretrain_ckpt/seqrec_pretrain_ckpt.bin
 ```
-You need to set four paths in the file: 
-- `LIGHTNING_CKPT_PATH`, pretrained lightning checkpoint path.
-- `LONGFORMER_CKPT_PATH`, Longformer checkpoint (from `save_longformer_ckpt.py`) path.
-- `OUTPUT_CKPT_PATH`, output path of Recformer checkpoint (for class `RecformerModel` in `recformer/models.py`).
-- `OUTPUT_CONFIG_PATH`, output path of Recformer for Sequential Recommendation checkpoint (for class `RecformerForSeqRec` in `recformer/models.py`). 
+All paths can be passed from command-line arguments.
 
 ## Pretrained Model
 
-We reproduce pretrained checkpoints for `RecformerModel` and `RecformerForSeqRec` used in the KDD paper (`allenai/longformer-base-4096` as backbone).
+We reproduce pretrained checkpoints for `RecformerModel` and `RecformerForSeqRec` used in the KDD paper.
 |              Model              |
 |:-------------------------------|
 |[RecformerModel](https://drive.google.com/file/d/1aWsPLLgBaO51mPqzZrNdPmlBkMEZ-naR/view?usp=sharing)|
@@ -92,11 +108,11 @@ You can load the pretrained model by running the following code:
 import torch
 from recformer import RecformerModel, RecformerConfig, RecformerForSeqRec
 
-config = RecformerConfig.from_pretrained('allenai/longformer-base-4096')
+config = RecformerConfig.from_pretrained('severinsimmler/xlm-roberta-longformer-base-16384')
 config.max_attr_num = 3  # max number of attributes for each item
 config.max_attr_length = 32 # max number of tokens for each attribute
 config.max_item_embeddings = 51 # max number of items in a sequence +1 for cls token
-config.attention_window = [64] * 12 # attention window for each layer
+config.attention_window = [64] * config.num_hidden_layers # attention window for each layer
 
 model = RecformerModel(config)
 model.load_state_dict(torch.load('recformer_ckpt.bin'))
@@ -130,6 +146,10 @@ We train `RecformerForSeqRec` with two-stage finetuning like the KDD paper to co
 ```bash
 bash finetune.sh
 ```
+The finetuning script defaults to single-GPU bf16 (`CUDA_VISIBLE_DEVICES=0`, `--precision bf16`) for better RTX 4080 utilization.
+For a 12GB RTX 4080, dry-run suggests starting from:
+- `BATCH_SIZE=12`
+- `GRADIENT_ACCUMULATION_STEPS=6`
 Our code will train and evaluate the model for the sequential recommendation task and return all metrics reported in that KDD paper.
 
 <strong>Note</strong>: from our empirical results, you can set a smaller maximum length (512 or 256, our model is default to 1024) of Recformer `e.g., config.max_token_num = 512` to obtain more efficient finetuning and inference without obvious performance decay (128 has an obvious decay).

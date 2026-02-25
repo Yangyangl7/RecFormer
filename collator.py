@@ -2,7 +2,6 @@ from typing import Optional, Union, List, Dict, Tuple
 from dataclasses import dataclass
 from recformer import RecformerTokenizer
 import torch
-import unicodedata
 import random
 
 
@@ -95,86 +94,44 @@ class PretrainDataCollatorWithPadding:
 
         batch_input = self._collate_batch(input_ids)
 
-        mask_labels = []
-        for e in flat_features:
-            ref_tokens = []
-            for id in e["input_ids"]:
-                token = self.tokenizer._convert_id_to_token(id)
-                ref_tokens.append(token)
-
-            mask_labels.append(self._whole_word_mask(ref_tokens))
+        mask_labels = [self._token_level_mask(e["input_ids"]) for e in flat_features]
 
         batch_mask = self._collate_batch(mask_labels)
         inputs, labels = self.mask_tokens(batch_input, batch_mask)
 
         return inputs, labels
 
-    def _whole_word_mask(self, input_tokens: List[str], max_predictions=512):
+    def _token_level_mask(self, input_ids: List[int], max_predictions: int = 512):
+        special_tokens_mask = self.tokenizer.get_special_tokens_mask(input_ids, already_has_special_tokens=True)
 
-        cand_indexes = []
-
-        for (i, token) in enumerate(input_tokens):
-
-            if token == self.tokenizer.bos_token or token == self.tokenizer.eos_token:
+        candidate_positions = []
+        for index, token_id in enumerate(input_ids):
+            if special_tokens_mask[index]:
                 continue
-
-            if self._is_subword(token) and len(cand_indexes) > 0:
-                cand_indexes[-1].append(i)
-            else:
-                cand_indexes.append([i])
-
-        random.shuffle(cand_indexes)
-        num_to_predict = min(max_predictions, max(1, int(round(len(input_tokens) * self.mlm_probability))))
-        masked_lms = []
-        covered_indexes = set()
-        for index_set in cand_indexes:
-            if len(masked_lms) >= num_to_predict:
-                break
-            # If adding a whole-word mask would exceed the maximum number of
-            # predictions, then just skip this candidate.
-            if len(masked_lms) + len(index_set) > num_to_predict:
+            if self.tokenizer.pad_token_id is not None and token_id == self.tokenizer.pad_token_id:
                 continue
-            is_any_index_covered = False
-            for index in index_set:
-                if index in covered_indexes:
-                    is_any_index_covered = True
-                    break
-            if is_any_index_covered:
-                continue
-            for index in index_set:
-                covered_indexes.add(index)
-                masked_lms.append(index)
+            candidate_positions.append(index)
 
-        assert len(covered_indexes) == len(masked_lms)
-        mask_labels = [1 if i in covered_indexes else 0 for i in range(len(input_tokens))]
-        return mask_labels
+        if len(candidate_positions) == 0:
+            return [0] * len(input_ids)
 
-    def _is_subword(self, token: str):
-        if (
-            not self.tokenizer.convert_tokens_to_string(token).startswith(" ")
-            and not self._is_punctuation(token[0])
-        ):
-            return True
-        
-        return False
+        random.shuffle(candidate_positions)
+        num_to_predict = min(max_predictions, max(1, int(round(len(candidate_positions) * self.mlm_probability))))
+        selected = set(candidate_positions[:num_to_predict])
+        return [1 if index in selected else 0 for index in range(len(input_ids))]
 
-    @staticmethod
-    def _is_punctuation(char: str):
-        # obtained from:
-        # https://github.com/huggingface/transformers/blob/5f25a5f367497278bf19c9994569db43f96d5278/transformers/tokenization_bert.py#L489
-        cp = ord(char)
-        if (cp >= 33 and cp <= 47) or (cp >= 58 and cp <= 64) or (cp >= 91 and cp <= 96) or (cp >= 123 and cp <= 126):
-            return True
-        cat = unicodedata.category(char)
-        if cat.startswith("P"):
-            return True
-        return False
+    def _tokenizer_vocab_size(self):
+        vocab_size = getattr(self.tokenizer, "vocab_size", None)
+        if vocab_size is not None:
+            return int(vocab_size)
+        if hasattr(self.tokenizer, "get_vocab"):
+            return len(self.tokenizer.get_vocab())
+        raise ValueError("Cannot determine tokenizer vocabulary size.")
 
 
     def mask_tokens(self, inputs: torch.Tensor, mask_labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original. Set
-        'mask_labels' means we use whole word mask (wwm), we directly mask idxs according to it's ref.
+        Prepare masked tokens inputs/labels for masked language modeling: 80% MASK, 10% random, 10% original.
         """
 
         if self.tokenizer.mask_token is None:
@@ -190,7 +147,7 @@ class PretrainDataCollatorWithPadding:
             self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
         ]
         probability_matrix.masked_fill_(torch.tensor(special_tokens_mask, dtype=torch.bool), value=0.0)
-        if self.tokenizer._pad_token is not None:
+        if self.tokenizer.pad_token_id is not None:
             padding_mask = labels.eq(self.tokenizer.pad_token_id)
             probability_matrix.masked_fill_(padding_mask, value=0.0)
 
@@ -203,7 +160,7 @@ class PretrainDataCollatorWithPadding:
 
         # 10% of the time, we replace masked input tokens with random word
         indices_random = torch.bernoulli(torch.full(labels.shape, 0.5)).bool() & masked_indices & ~indices_replaced
-        random_words = torch.randint(len(self.tokenizer), labels.shape, dtype=torch.long)
+        random_words = torch.randint(self._tokenizer_vocab_size(), labels.shape, dtype=torch.long)
         inputs[indices_random] = random_words[indices_random]
 
         # The rest of the time (10% of the time) we keep the masked input tokens unchanged
@@ -223,7 +180,7 @@ class PretrainDataCollatorWithPadding:
             return torch.stack(examples, dim=0)
 
         # If yes, check if we have a `pad_token`.
-        if self.tokenizer._pad_token is None:
+        if self.tokenizer.pad_token_id is None:
             raise ValueError(
                 "You are attempting to pad samples but the tokenizer you are using"
                 f" ({self.tokenizer.__class__.__name__}) does not have a pad token."

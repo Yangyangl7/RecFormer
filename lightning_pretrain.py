@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model_name_or_path', type=str, default=None)
+parser.add_argument('--model_name_or_path', type=str, default='severinsimmler/xlm-roberta-longformer-base-16384')
 parser.add_argument('--temp', type=float, default=0.05, help="Temperature for softmax.")
 parser.add_argument('--preprocessing_num_workers', type=int, default=8, help="The number of processes to use for the preprocessing.")
 parser.add_argument('--train_file', type=str, required=True)
@@ -33,11 +33,15 @@ parser.add_argument('--batch_size', type=int, default=2)
 parser.add_argument('--learning_rate', type=float, default=5e-5)
 parser.add_argument('--valid_step', type=int, default=2000)
 parser.add_argument('--log_step', type=int, default=2000)
-parser.add_argument('--device', type=int, default=1)
-parser.add_argument('--fp16', action='store_true')
+parser.add_argument('--device', type=int, default=None, help='Deprecated alias for --devices')
+parser.add_argument('--devices', type=int, default=1, help='Number of visible GPUs to use')
+parser.add_argument('--strategy', type=str, default='auto', help='Trainer strategy, e.g. auto, ddp, deepspeed_stage_2')
+parser.add_argument('--precision', type=str, default='bf16-mixed', choices=['32', '16-mixed', 'bf16-mixed'])
+parser.add_argument('--fp16', action='store_true', help='Deprecated alias to set --precision 16-mixed')
 parser.add_argument('--ckpt', type=str, default=None)
-parser.add_argument('--longformer_ckpt', type=str, default='longformer_ckpt/longformer-base-4096.bin')
+parser.add_argument('--longformer_ckpt', type=str, default='longformer_ckpt/xlm-roberta-longformer-base-16384.bin')
 parser.add_argument('--fix_word_embedding', action='store_true')
+parser.add_argument('--disable_tf32', action='store_true')
 
 
 
@@ -51,17 +55,37 @@ def _par_tokenize_doc(doc):
     return item_id, input_ids, token_type_ids
 
 
+def setup_gpu_runtime(disable_tf32: bool):
+    if not torch.cuda.is_available():
+        return False
+
+    torch.backends.cudnn.benchmark = True
+    if not disable_tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision('high')
+    return True
+
+
 def main():
     
     args = parser.parse_args()
     print(args)
     seed_everything(42)
+    has_cuda = setup_gpu_runtime(args.disable_tf32)
+
+    if args.fp16:
+        args.precision = '16-mixed'
+    if args.device is not None:
+        args.devices = args.device
+    if not has_cuda:
+        args.precision = '32'
 
     config = RecformerConfig.from_pretrained(args.model_name_or_path)
     config.max_attr_num = 3
     config.max_attr_length = 32
     config.max_item_embeddings = 51  # 50 item and 1 for cls
-    config.attention_window = [64] * 12
+    config.attention_window = [64] * config.num_hidden_layers
     config.max_token_num = 1024
     tokenizer = RecformerTokenizer.from_pretrained(args.model_name_or_path, config)
 
@@ -101,11 +125,15 @@ def main():
                               batch_size=args.batch_size, 
                               shuffle=True, 
                               collate_fn=train_data.collate_fn,
-                              num_workers=args.dataloader_num_workers)
+                              num_workers=args.dataloader_num_workers,
+                              pin_memory=has_cuda,
+                              persistent_workers=args.dataloader_num_workers > 0)
     dev_loader = DataLoader(dev_data, 
                             batch_size=args.batch_size, 
                             collate_fn=dev_data.collate_fn,
-                            num_workers=args.dataloader_num_workers)
+                            num_workers=args.dataloader_num_workers,
+                            pin_memory=has_cuda,
+                            persistent_workers=args.dataloader_num_workers > 0)
     
     pytorch_model = RecformerForPretraining(config)
     pytorch_model.load_state_dict(torch.load(args.longformer_ckpt))
@@ -118,17 +146,20 @@ def main():
     model = LitWrapper(pytorch_model, learning_rate=args.learning_rate)
 
     checkpoint_callback = ModelCheckpoint(save_top_k=5, monitor="accuracy", mode="max", filename="{epoch}-{accuracy:.4f}")
+    trainer_strategy = args.strategy
+    if args.devices <= 1 and args.strategy.startswith('deepspeed'):
+        trainer_strategy = 'auto'
     
-    trainer = Trainer(accelerator="gpu",
+    trainer = Trainer(accelerator="gpu" if has_cuda else "cpu",
                      max_epochs=args.num_train_epochs,
-                     devices=args.device,
+                     devices=args.devices if has_cuda else 1,
                      accumulate_grad_batches=args.gradient_accumulation_steps,
                      val_check_interval=args.valid_step,
                      default_root_dir=args.output_dir,
                      gradient_clip_val=1.0,
                      log_every_n_steps=args.log_step,
-                     precision=16 if args.fp16 else 32,
-                     strategy='deepspeed_stage_2',
+                     precision=args.precision,
+                     strategy=trainer_strategy,
                      callbacks=[checkpoint_callback]
                      )
 
